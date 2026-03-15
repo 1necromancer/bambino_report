@@ -1,0 +1,226 @@
+"""
+Инвентаризация (вечер): после продаж — запрос фото весов по каждому сорту.
+OCR красных цифр, сверка: остаток_БД - продажи_г = ожидаемый_вес;
+чистый_вес_с_фото - ожидаемый = разница; при отрицательной разнице — штраф по cost_per_gram.
+"""
+import asyncio
+from datetime import date
+from decimal import Decimal
+from pathlib import Path
+
+from aiogram import F, Router
+from aiogram.filters import StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
+from database.models import DailyReport, Product, SaleEntry
+from utils.ocr import extract_weight_from_scale_image
+
+router = Router()
+
+CONFIDENCE_THRESHOLD = 0.5
+
+
+@router.callback_query(F.data == "inventory_start")
+async def inventory_start(
+    callback: CallbackQuery, session: AsyncSession, state: FSMContext
+) -> None:
+    await state.clear()
+    today = date.today()
+    # Продукты, по которым были продажи сегодня
+    subq = (
+        select(SaleEntry.product_id)
+        .where(SaleEntry.report_date == today)
+        .distinct()
+    )
+    result = await session.execute(
+        select(Product).where(Product.id.in_(subq)).order_by(Product.name)
+    )
+    products = list(result.scalars().all())
+    if not products:
+        await callback.message.edit_text(
+            "Сегодня нет продаж для инвентаризации. Сначала введите продажи."
+        )
+        await callback.answer()
+        return
+
+    # Считаем по каждому ожидаемый вес и выручку (только примитивы для FSM)
+    inventory_list = []
+    for p in products:
+        sold_result = await session.execute(
+            select(
+                func.coalesce(func.sum(SaleEntry.size_grams * SaleEntry.quantity), 0).label("sold_grams"),
+                func.coalesce(func.sum(SaleEntry.quantity * SaleEntry.sale_price), 0).label("revenue"),
+            ).where(SaleEntry.product_id == p.id, SaleEntry.report_date == today)
+        )
+        row = sold_result.one()
+        sold_grams = row.sold_grams or 0
+        revenue = row.revenue or 0
+        expected = float(p.current_weight_grams or 0) - float(sold_grams)
+        inventory_list.append({
+            "product_id": p.id,
+            "product_name": p.name,
+            "tare_weight": float(p.tare_weight or 0),
+            "cost_per_gram": float(p.cost_per_gram or 0),
+            "expected_weight": expected,
+            "total_revenue": float(revenue),
+        })
+
+    await state.update_data(inventory_list=inventory_list, inventory_index=0)
+    await state.set_state("inventory_photo")
+    await _ask_next_photo(callback.message, session, state)
+    await callback.answer()
+
+
+async def _ask_next_photo(
+    message: Message, session: AsyncSession, state: FSMContext
+) -> None:
+    data = await state.get_data()
+    inventory_list = data["inventory_list"]
+    idx = data["inventory_index"]
+    if idx >= len(inventory_list):
+        await state.set_state("inventory_done")
+        await message.answer(
+            "Все фото получены. Формирую отчёт…",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Показать отчёт", callback_data="report_show")],
+                [InlineKeyboardButton(text="« В меню", callback_data="menu")],
+            ]),
+        )
+        return
+    item = inventory_list[idx]
+    name = item["product_name"]
+    await message.answer(f"Фото весов для сорта «{name}» (красные цифры на дисплее):")
+
+
+@router.message(F.photo, StateFilter("inventory_photo"))
+async def inventory_photo(
+    message: Message, session: AsyncSession, state: FSMContext
+) -> None:
+    data = await state.get_data()
+    inventory_list = data["inventory_list"]
+    idx = data["inventory_index"]
+    if idx >= len(inventory_list):
+        return
+    item = inventory_list[idx]
+    product_id = item["product_id"]
+    product_name = item["product_name"]
+    expected_weight = item["expected_weight"]
+    total_revenue = Decimal(str(item["total_revenue"]))
+    tare_weight = item["tare_weight"]
+    cost_per_gram = item["cost_per_gram"]
+
+    photo = message.photo[-1]
+    file = await message.bot.get_file(photo.file_id)
+    suffix = Path(file.file_path or "photo.jpg").suffix or ".jpg"
+    path = Path("/tmp") / f"scale_{product_id}_{message.from_user.id}{suffix}"
+    await message.bot.download_file(file.file_path, path)
+
+    await message.answer("Обрабатываю фото весов… (до 1–2 мин)")
+    try:
+        actual_raw, _ = await asyncio.to_thread(
+            extract_weight_from_scale_image, path
+        )
+    except Exception:
+        path.unlink(missing_ok=True)
+        await message.answer(
+            f"Ошибка распознавания для «{product_name}». Введите вес вручную (граммы):"
+        )
+        await state.set_state("inventory_manual_weight")
+        await state.update_data(inventory_current_product_id=product_id)
+        return
+    finally:
+        path.unlink(missing_ok=True)
+
+    if actual_raw is None:
+        await message.answer(
+            f"Не удалось распознать вес для «{product_name}». Введите вес вручную (число в граммах):"
+        )
+        await state.set_state("inventory_manual_weight")
+        await state.update_data(inventory_current_product_id=product_id)
+        return
+
+    actual_net = actual_raw - tare_weight
+    discrepancy = actual_net - expected_weight
+    penalty = Decimal("0")
+    if discrepancy < 0:
+        penalty = Decimal(str(abs(discrepancy))) * Decimal(str(cost_per_gram))
+
+    today = date.today()
+    report = DailyReport(
+        product_id=product_id,
+        report_date=today,
+        expected_weight=Decimal(str(expected_weight)),
+        actual_weight_from_photo=Decimal(str(actual_net)),
+        discrepancy_grams=Decimal(str(discrepancy)),
+        total_revenue=total_revenue,
+        penalty_amount=penalty,
+    )
+    session.add(report)
+
+    result = await session.execute(select(Product).where(Product.id == product_id))
+    product = result.scalar_one()
+    product.current_weight_grams = Decimal(str(actual_net))
+    await session.flush()
+
+    await message.answer(
+        f"«{product_name}»: ожидаемый {expected_weight} г, с фото {actual_net:.1f} г, разница {discrepancy:.1f} г. Штраф: {penalty:.2f} ₽."
+    )
+
+    await state.update_data(inventory_index=idx + 1)
+    await _ask_next_photo(message, session, state)
+
+
+@router.message(F.text, StateFilter("inventory_manual_weight"))
+async def inventory_manual_weight(
+    message: Message, session: AsyncSession, state: FSMContext
+) -> None:
+    try:
+        actual_raw = float(message.text.replace(",", ".").strip())
+    except ValueError:
+        await message.answer("Введите число (граммы).")
+        return
+    data = await state.get_data()
+    inventory_list = data["inventory_list"]
+    idx = data["inventory_index"]
+    product_id = data["inventory_current_product_id"]
+    item = next((x for x in inventory_list if x["product_id"] == product_id), None)
+    if not item:
+        await state.set_state("inventory_photo")
+        await message.answer("Ошибка состояния. Начните инвентаризацию заново.")
+        return
+
+    product_name = item["product_name"]
+    expected_weight = item["expected_weight"]
+    total_revenue = Decimal(str(item["total_revenue"]))
+    tare = item["tare_weight"]
+    cost_per_gram = item["cost_per_gram"]
+    actual_net = actual_raw - tare
+    discrepancy = actual_net - expected_weight
+    penalty = Decimal("0")
+    if discrepancy < 0:
+        penalty = Decimal(str(abs(discrepancy))) * Decimal(str(cost_per_gram))
+
+    today = date.today()
+    report = DailyReport(
+        product_id=product_id,
+        report_date=today,
+        expected_weight=Decimal(str(expected_weight)),
+        actual_weight_from_photo=Decimal(str(actual_net)),
+        discrepancy_grams=Decimal(str(discrepancy)),
+        total_revenue=total_revenue,
+        penalty_amount=penalty,
+    )
+    session.add(report)
+    result = await session.execute(select(Product).where(Product.id == product_id))
+    product = result.scalar_one()
+    product.current_weight_grams = Decimal(str(actual_net))
+    await session.flush()
+
+    await message.answer(
+        f"«{product_name}»: разница {discrepancy:.1f} г. Штраф: {penalty:.2f} ₽."
+    )
+    await state.update_data(inventory_index=idx + 1, inventory_current_product_id=None)
+    await state.set_state("inventory_photo")
+    await _ask_next_photo(message, session, state)

@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+.cache/
+.mypy_cache/
+.pytest_cache/
+
+# Virtual env
+.venv/
+venv/
+
+# Editor / OS
+.vscode/
+.idea/
+*.iml
+.DS_Store
+
+# Env / secrets
+.env
+.env.*
+*.env
+
+# Coverage / test artifacts
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.hypothesis/
+
+# Logs
+*.log
+
+# Cursor / tooling (if present in repo root)
+.cursor/

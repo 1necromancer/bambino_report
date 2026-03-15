@@ -1,0 +1,26 @@
+from aiogram import F, Router
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+
+router = Router()
+
+
+def main_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Приход товара", callback_data="receipt_start")],
+        [InlineKeyboardButton(text="Ввод продаж", callback_data="sales_start")],
+        [InlineKeyboardButton(text="Инвентаризация (вечер)", callback_data="inventory_start")],
+    ])
+
+
+@router.message(F.text == "/start")
+async def cmd_start(message: Message) -> None:
+    await message.answer(
+        "Меню учёта мороженого:",
+        reply_markup=main_kb(),
+    )
+
+
+@router.callback_query(F.data == "menu")
+async def back_to_menu(callback: CallbackQuery) -> None:
+    await callback.message.edit_text("Меню учёта мороженого:", reply_markup=main_kb())
+    await callback.answer()
