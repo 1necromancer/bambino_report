@@ -47,35 +47,44 @@ def _resize_for_ocr(img: np.ndarray, max_side: int = 1300) -> np.ndarray:
 
 def preprocess_scale_display(img: np.ndarray) -> np.ndarray:
     """
-    Предобработка изображения дисплея весов для лучшего распознавания
-    красных сегментных цифр (LED/LCD). Уменьшает блики, выделяет красный,
-    усиливает контраст и даёт бинарное изображение (белые цифры на чёрном).
+    Предобработка изображения дисплея весов:
+    - кроп области левого верхнего окошка «ВЕС кг»
+    - маска по красному цвету в HSV
+    - лёгкий морфологический фильтр
     """
     if img is None or img.size == 0:
         return img
-    img = _resize_for_ocr(img)
-    # 1. Сглаживание для уменьшения бликов (сохраняет границы лучше, чем Gaussian)
-    denoised = cv2.bilateralFilter(img, d=9, sigmaColor=75, sigmaSpace=75)
-    if len(denoised.shape) == 2:
-        red_channel = denoised
-    else:
-        b, g, r = cv2.split(denoised)
-        # 2. Выделение красного: красный минус зелёный и синий (сегменты обычно чисто красные)
-        red_enhanced = cv2.subtract(r, cv2.addWeighted(g, 0.5, b, 0.5, 0))
-        red_channel = np.clip(red_enhanced, 0, 255).astype(np.uint8)
-    # 3. Повышение контраста (сегменты ярче фона)
-    red_channel = cv2.normalize(red_channel, None, 0, 255, cv2.NORM_MINMAX)
-    # 4. Адаптивный порог — устойчивее к неравномерной подсветке и бликам
-    thresh = cv2.adaptiveThreshold(
-        red_channel, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
-    )
-    # 5. Морфология: закрытие — склеивает разрывы в сегментах цифр
-    kernel_close = np.ones((2, 2), np.uint8)
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_close)
-    # 6. Лёгкое открытие — убирает мелкий шум, не разъедая тонкие сегменты
-    kernel_open = np.ones((1, 1), np.uint8)
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel_open)
-    return thresh
+
+    img = _resize_for_ocr(img, max_side=800)
+    h, w = img.shape[:2]
+    # Эмпирический кроп под ваши весы:
+    # верхние 40% дисплея, левая треть — там окошко «ВЕС кг»
+    top = int(h * 0.05)
+    bottom = int(h * 0.55)
+    left = int(w * 0.05)
+    right = int(w * 0.45)
+    crop = img[top:bottom, left:right]
+    if crop.size == 0:
+        crop = img
+
+    # Переводим в HSV и выделяем красные пиксели
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    # Красный в HSV обычно попадает в два диапазона (через 180):
+    lower_red1 = np.array([0, 70, 70])
+    upper_red1 = np.array([10, 255, 255])
+    lower_red2 = np.array([160, 70, 70])
+    upper_red2 = np.array([179, 255, 255])
+
+    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+    mask = cv2.bitwise_or(mask1, mask2)
+
+    # Немного морфологии, чтобы цифры стали сплошнее
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    return mask
 
 
 def _preprocess_scale_red(img: np.ndarray) -> np.ndarray:
@@ -152,14 +161,17 @@ def extract_weight_from_scale_image(image_path: str | Path) -> Tuple[float | Non
     if img is None:
         return None, 0.0
 
-    # Для весов оставляем нижнюю треть кадра, где расположен дисплей.
+    # Для весов оставляем нижнюю часть кадра, где расположен блок дисплеев и кнопки.
     h, w = img.shape[:2]
-    display = img[int(h * 0.55) : int(h * 0.95), :]
-    display = _resize_for_ocr(display)
+    display_block = img[int(h * 0.55) : int(h * 0.98), :]
+    display_block = _resize_for_ocr(display_block, max_side=800)
 
-    preprocessed = _preprocess_scale_red(display)
+    # Предобработка: выделяем только красный сегмент лев. верхнего окна «ВЕС кг»
+    preprocessed = preprocess_scale_display(display_block)
+
     reader = _get_reader()
-    results = reader.readtext(preprocessed)
+    # Ограничиваем алфавит только цифрами и точкой
+    results = reader.readtext(preprocessed, allowlist="0123456789.")
     weight_value = None
     best_conf = 0.0
     # Число: целое или с точкой/запятой, возможно с 'г' или 'гр'
