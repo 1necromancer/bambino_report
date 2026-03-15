@@ -107,21 +107,36 @@ def extract_massa_from_label(image_path: str | Path) -> Tuple[float | None, floa
     results = reader.readtext(cropped)
     mass_value = None
     best_conf = 0.0
-    # Паттерн: МАССА и рядом число (целое или с запятой/точкой)
-    # Поддерживаем варианты вроде "МАССА 4.122 КГ", "МАССА 4,122 КГ Т" и т.п.
+
+    # 1) Пытаемся найти паттерн "МАССА N ..." в одной строке
     mass_re = re.compile(
         r"масса\s*[:\s]*(\d+(?:[.,]\d+)?)\s*(?:кг|кгт|г|грамм|нетто)?", re.I
     )
-    for (bbox, text, conf) in results:
-        text_clean = text.replace(" ", "").replace("\n", " ")
-        m = mass_re.search(text_clean) or mass_re.search(text)
+    # 2) Если 'МАССА' и число разорваны (как в вашем примере),
+    #    ищем просто число с единицами измерения.
+    num_with_unit_re = re.compile(
+        r"(\d+(?:[.,]\d+)?)\s*(?:кг|кгт|г|грамм|нетто)", re.I
+    )
+
+    for (_bbox, text, conf) in results:
+        text_clean = text.replace("\n", " ")
+
+        m = mass_re.search(text_clean)
+        if not m:
+            m = num_with_unit_re.search(text_clean)
+
         if m:
             try:
                 num_str = m.group(1).replace(",", ".")
-                mass_value = float(num_str)
-                best_conf = max(best_conf, conf)
+                value = float(num_str)
             except ValueError:
                 continue
+
+            # сохраняем вариант с наибольшей уверенностью
+            if value is not None and conf >= best_conf:
+                mass_value = value
+                best_conf = conf
+
     return mass_value, float(best_conf) if best_conf else 0.0
 
 
