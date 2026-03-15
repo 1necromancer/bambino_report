@@ -38,3 +38,7 @@ htmlcov/
 
 # Cursor / tooling (if present in repo root)
 .cursor/
+
+# Google Cloud credentials
+gcp-vision-key.json
+*.gcp-key.json

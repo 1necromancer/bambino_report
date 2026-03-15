@@ -22,6 +22,9 @@ services:
     env_file: .env
     environment:
       DB_URL: postgresql+asyncpg://${POSTGRES_USER:-bombino}:${POSTGRES_PASSWORD:-bombino_secret}@db:5432/${POSTGRES_DB:-bambino}
+      GOOGLE_APPLICATION_CREDENTIALS: /app/gcp-vision-key.json
+    volumes:
+      - ./gcp-vision-key.json:/app/gcp-vision-key.json:ro
     depends_on:
       db:
         condition: service_healthy

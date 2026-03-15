@@ -6,10 +6,16 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, List
 
 import cv2
 import numpy as np
+
+try:
+    # Optional: only used when GOOGLE_APPLICATION_CREDENTIALS is configured
+    from google.cloud import vision  # type: ignore[import]
+except ImportError:  # pragma: no cover
+    vision = None  # type: ignore[assignment]
 
 # Lazy init reader to avoid loading at import
 _reader = None
@@ -188,3 +194,126 @@ def extract_weight_from_scale_image(image_path: str | Path) -> Tuple[float | Non
             except ValueError:
                 continue
     return weight_value, float(best_conf) if best_conf else 0.0
+
+
+def detect_text_gcv(image_path: str | Path) -> str:
+    """
+    Распознаёт текст на картинке с помощью Google Cloud Vision API.
+
+    Возвращает полный текст (full_text_annotation) либо пустую строку,
+    если Vision не настроен или произошла ошибка.
+    """
+    if vision is None:
+        return ""
+
+    path = Path(image_path)
+    if not path.exists():
+        return ""
+
+    client = vision.ImageAnnotatorClient()
+    with path.open("rb") as f:
+        content = f.read()
+
+    image = vision.Image(content=content)
+    response = client.document_text_detection(image=image)
+
+    if response.error.message:
+        # Не падаем, просто возвращаем пустую строку
+        return ""
+
+    if response.full_text_annotation and response.full_text_annotation.text:
+        return response.full_text_annotation.text
+
+    # fallback: склеиваем отдельные блоки, если почему‑то нет full_text_annotation
+    texts: List[str] = [t.description for t in response.text_annotations]
+    return "\n".join(texts)
+
+
+def extract_weight_with_gcv(image_path: str | Path) -> Tuple[float | None, str]:
+    """
+    Использует Google Cloud Vision для распознавания веса на весах.
+
+    Алгоритм:
+      1. Кроп нижней части фото (где блок дисплеев и кнопки).
+      2. Для каждого текстового блока смотрим его bounding box.
+      3. Оставляем блоки в верхней левой части этого блока (там «ВЕС кг»).
+      4. Из текста этих блоков извлекаем число (целое/с точкой).
+
+    Возвращает (вес_кг или None, полный_распознанный_текст).
+    """
+    if vision is None:
+        return None, ""
+
+    path = Path(image_path)
+    if not path.exists():
+        return None, ""
+
+    # Кропим нижнюю часть, как и для OpenCV‑подхода
+    img = cv2.imread(str(path))
+    if img is None:
+        return None, ""
+    h, w = img.shape[:2]
+    display_block = img[int(h * 0.55) : int(h * 0.98), :]
+    block_top, block_left = int(h * 0.55), 0
+
+    _, buf = cv2.imencode(".jpg", display_block)
+    content = buf.tobytes()
+
+    client = vision.ImageAnnotatorClient()
+    image = vision.Image(content=content)
+    response = client.document_text_detection(image=image)
+    if response.error.message:
+        return None, ""
+
+    full_text = ""
+    if response.full_text_annotation and response.full_text_annotation.text:
+        full_text = response.full_text_annotation.text
+
+    # Эмпирически: интересует верхний левый квадрант блока дисплеев
+    candidates: List[Tuple[float, float]] = []  # (value_kg, score)
+
+    for page in response.full_text_annotation.pages:
+        for block in page.blocks:
+            # Берём bbox блока в координатах display_block
+            xs = [v.x for v in block.bounding_box.vertices]
+            ys = [v.y for v in block.bounding_box.vertices]
+            if not xs or not ys:
+                continue
+            bx_min, bx_max = min(xs), max(xs)
+            by_min, by_max = min(ys), max(ys)
+
+            # Нормируем, чтобы понимать «верхний левый угол»
+            nx_min = bx_min / max(w, 1)
+            ny_min = (by_min + block_top) / max(h, 1)
+
+            # Оставляем только верхнюю левую часть блока дисплеев
+            if nx_min > 0.5 or ny_min > 0.8:
+                continue
+
+            # Собираем текст блока
+            block_text_parts: List[str] = []
+            for para in block.paragraphs:
+                for word in para.words:
+                    word_text = "".join([s.text for s in word.symbols])
+                    block_text_parts.append(word_text)
+            block_text = " ".join(block_text_parts)
+
+            # Ищем число в этом тексте
+            m = re.search(r"(\d+(?:[.,]\d+)?)", block_text)
+            if not m:
+                continue
+            try:
+                val = float(m.group(1).replace(",", "."))
+            except ValueError:
+                continue
+            # Простой скор: чем левее/выше, тем лучше
+            score = (1.0 - nx_min) + (1.0 - ny_min)
+            candidates.append((val, score))
+
+    if not candidates:
+        return None, full_text
+
+    # Берём самое «левое‑верхнее» число
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    value_kg = candidates[0][0]
+    return value_kg, full_text
