@@ -9,10 +9,11 @@ def main_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Приход товара", callback_data="receipt_start")],
         [InlineKeyboardButton(text="Ввод продаж", callback_data="sales_start")],
         [InlineKeyboardButton(text="Инвентаризация (вечер)", callback_data="inventory_start")],
+        [InlineKeyboardButton(text="Склад", callback_data="stock_show")],
     ])
 
 
-@router.message(F.text == "/start")
+@router.message(F.text.in_({"/start", "Меню", "меню"}))
 async def cmd_start(message: Message) -> None:
     await message.answer(
         "Меню учёта мороженого:",
