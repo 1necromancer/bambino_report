@@ -29,6 +29,22 @@ def _get_reader(lang: tuple = ("ru", "en")):
     return _reader_ru
 
 
+def _resize_for_ocr(img: np.ndarray, max_side: int = 1300) -> np.ndarray:
+    """
+    Уменьшает очень большие снимки до разумного размера для OCR,
+    сохраняя соотношение сторон. Это заметно ускоряет EasyOCR.
+    """
+    if img is None or img.size == 0:
+        return img
+    h, w = img.shape[:2]
+    current_max = max(h, w)
+    if current_max <= max_side:
+        return img
+    scale = max_side / float(current_max)
+    new_w, new_h = int(w * scale), int(h * scale)
+    return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+
 def preprocess_scale_display(img: np.ndarray) -> np.ndarray:
     """
     Предобработка изображения дисплея весов для лучшего распознавания
@@ -37,6 +53,7 @@ def preprocess_scale_display(img: np.ndarray) -> np.ndarray:
     """
     if img is None or img.size == 0:
         return img
+    img = _resize_for_ocr(img)
     # 1. Сглаживание для уменьшения бликов (сохраняет границы лучше, чем Gaussian)
     denoised = cv2.bilateralFilter(img, d=9, sigmaColor=75, sigmaSpace=75)
     if len(denoised.shape) == 2:
@@ -80,12 +97,21 @@ def extract_massa_from_label(image_path: str | Path) -> Tuple[float | None, floa
     img = cv2.imread(str(path))
     if img is None:
         return None, 0.0
+
+    # Для этикетки берём нижнюю треть кадра по центру — там обычно находится стикер.
+    h, w = img.shape[:2]
+    cropped = img[int(h * 0.55) : int(h * 0.98), int(w * 0.15) : int(w * 0.85)]
+    cropped = _resize_for_ocr(cropped)
+
     reader = _get_reader()
-    results = reader.readtext(img)
+    results = reader.readtext(cropped)
     mass_value = None
     best_conf = 0.0
     # Паттерн: МАССА и рядом число (целое или с запятой/точкой)
-    mass_re = re.compile(r"масса\s*[:\s]*(\d+(?:[.,]\d+)?)\s*(?:г|грамм|нетто)?", re.I)
+    # Поддерживаем варианты вроде "МАССА 4.122 КГ", "МАССА 4,122 КГ Т" и т.п.
+    mass_re = re.compile(
+        r"масса\s*[:\s]*(\d+(?:[.,]\d+)?)\s*(?:кг|кгт|г|грамм|нетто)?", re.I
+    )
     for (bbox, text, conf) in results:
         text_clean = text.replace(" ", "").replace("\n", " ")
         m = mass_re.search(text_clean) or mass_re.search(text)
@@ -110,7 +136,13 @@ def extract_weight_from_scale_image(image_path: str | Path) -> Tuple[float | Non
     img = cv2.imread(str(path))
     if img is None:
         return None, 0.0
-    preprocessed = _preprocess_scale_red(img)
+
+    # Для весов оставляем нижнюю треть кадра, где расположен дисплей.
+    h, w = img.shape[:2]
+    display = img[int(h * 0.55) : int(h * 0.95), :]
+    display = _resize_for_ocr(display)
+
+    preprocessed = _preprocess_scale_red(display)
     reader = _get_reader()
     results = reader.readtext(preprocessed)
     weight_value = None
