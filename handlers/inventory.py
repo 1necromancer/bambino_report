@@ -15,7 +15,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import DailyReport, Product, SaleEntry
-from utils.ocr import extract_weight_from_scale_image
+from utils.ocr import extract_weight_from_scale_image, extract_weight_with_gcv
 
 router = Router()
 
@@ -117,19 +117,18 @@ async def inventory_photo(
     path = Path("/tmp") / f"scale_{product_id}_{message.from_user.id}{suffix}"
     await message.bot.download_file(file.file_path, path)
 
-    await message.answer("Обрабатываю фото весов… (до 1–2 мин)")
+    await message.answer("Обрабатываю фото весов…")
+    actual_raw = None
     try:
-        actual_raw, _ = await asyncio.to_thread(
-            extract_weight_from_scale_image, path
-        )
+        weight_kg, _ = await asyncio.to_thread(extract_weight_with_gcv, path)
+        if weight_kg is not None:
+            actual_raw = weight_kg * 1000  # кг → граммы
+        if actual_raw is None:
+            actual_raw, _ = await asyncio.to_thread(
+                extract_weight_from_scale_image, path
+            )
     except Exception:
-        path.unlink(missing_ok=True)
-        await message.answer(
-            f"Ошибка распознавания для «{product_name}». Введите вес вручную (граммы):"
-        )
-        await state.set_state("inventory_manual_weight")
-        await state.update_data(inventory_current_product_id=product_id)
-        return
+        pass
     finally:
         path.unlink(missing_ok=True)
 

@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import Product
-from utils.ocr import extract_massa_from_label
+from utils.ocr import extract_massa_from_label, extract_massa_from_label_gcv
 
 router = Router()
 
@@ -78,19 +78,19 @@ async def receipt_photo(
         await message.bot.download_file(file.file_path, tmp.name)
         path = Path(tmp.name)
 
-    await message.answer("Обрабатываю фото… (распознавание может занять до 1–2 мин)")
+    await message.answer("Обрабатываю фото…")
+    mass_value = None
+    confidence = 0.0
     try:
         mass_value, confidence = await asyncio.to_thread(
-            extract_massa_from_label, path
+            extract_massa_from_label_gcv, path
         )
+        if mass_value is None or confidence < CONFIDENCE_THRESHOLD:
+            mass_value, confidence = await asyncio.to_thread(
+                extract_massa_from_label, path
+            )
     except Exception:
-        path.unlink(missing_ok=True)
-        await state.update_data(receipt_need_manual=True)
-        await state.set_state("receipt_wait_manual")
-        await message.answer(
-            "Ошибка распознавания. Введите массу вручную (число в граммах):"
-        )
-        return
+        pass
     finally:
         path.unlink(missing_ok=True)
 

@@ -229,6 +229,54 @@ def detect_text_gcv(image_path: str | Path) -> str:
     return "\n".join(texts)
 
 
+def extract_massa_from_label_gcv(image_path: str | Path) -> Tuple[float | None, float]:
+    """
+    Распознаёт массу на этикетке через Google Cloud Vision.
+    Ищет паттерны вида «МАССА 4.122 КГ», «0.092 КГ» и т.п.
+    Возвращает (масса в граммах или None, уверенность 0..1).
+    """
+    text = detect_text_gcv(image_path)
+    if not text:
+        return None, 0.0
+
+    # Число + КГ/г в одной строке; приоритет — значение в кг для продукта (обычно 0.0xx–1.x)
+    mass_re_kg = re.compile(
+        r"(?:масса|масса\s*нетто)?\s*[:\s]*(\d+(?:[.,]\d+)?)\s*кг",
+        re.I,
+    )
+    mass_re_g = re.compile(
+        r"(\d+(?:[.,]\d+)?)\s*г(?:рамм)?",
+        re.I,
+    )
+
+    candidates: List[Tuple[float, float]] = []  # (grams, conf)
+
+    for line in text.splitlines():
+        line = line.strip()
+        for regex, to_grams in [(mass_re_kg, 1000.0), (mass_re_g, 1.0)]:
+            m = regex.search(line)
+            if m:
+                try:
+                    num = float(m.group(1).replace(",", "."))
+                    grams = num * to_grams
+                    if 0 < grams < 1_000_000:
+                        conf = 0.9 if "масса" in line.lower() or to_grams == 1000 else 0.85
+                        candidates.append((grams, conf))
+                except ValueError:
+                    continue
+
+    if not candidates:
+        return None, 0.0
+
+    # Предпочитаем значение в диапазоне типичного веса продукта (10–2000 г)
+    in_range = [(g, c) for g, c in candidates if 10 <= g <= 2000]
+    if in_range:
+        best = max(in_range, key=lambda x: x[1])
+        return best[0], best[1]
+    best = max(candidates, key=lambda x: x[1])
+    return best[0], best[1]
+
+
 def extract_weight_with_gcv(image_path: str | Path) -> Tuple[float | None, str]:
     """
     Использует Google Cloud Vision для распознавания веса на весах.
@@ -248,13 +296,13 @@ def extract_weight_with_gcv(image_path: str | Path) -> Tuple[float | None, str]:
     if not path.exists():
         return None, ""
 
-    # Кропим нижнюю часть, как и для OpenCV‑подхода
+    # Кропим нижнюю часть, где блок дисплеев и кнопки
     img = cv2.imread(str(path))
     if img is None:
         return None, ""
     h, w = img.shape[:2]
     display_block = img[int(h * 0.55) : int(h * 0.98), :]
-    block_top, block_left = int(h * 0.55), 0
+    block_h, block_w = display_block.shape[:2]
 
     _, buf = cv2.imencode(".jpg", display_block)
     content = buf.tobytes()
@@ -269,25 +317,23 @@ def extract_weight_with_gcv(image_path: str | Path) -> Tuple[float | None, str]:
     if response.full_text_annotation and response.full_text_annotation.text:
         full_text = response.full_text_annotation.text
 
-    # Эмпирически: интересует верхний левый квадрант блока дисплеев
+    # Верхний левый квадрант блока дисплеев = окошко «ВЕС кг»
     candidates: List[Tuple[float, float]] = []  # (value_kg, score)
 
     for page in response.full_text_annotation.pages:
         for block in page.blocks:
-            # Берём bbox блока в координатах display_block
             xs = [v.x for v in block.bounding_box.vertices]
             ys = [v.y for v in block.bounding_box.vertices]
             if not xs or not ys:
                 continue
-            bx_min, bx_max = min(xs), max(xs)
-            by_min, by_max = min(ys), max(ys)
+            bx_min = min(xs)
+            by_min = min(ys)
 
-            # Нормируем, чтобы понимать «верхний левый угол»
-            nx_min = bx_min / max(w, 1)
-            ny_min = (by_min + block_top) / max(h, 1)
+            # Координаты в системе display_block (0..block_w, 0..block_h)
+            nx_min = bx_min / max(block_w, 1)
+            ny_min = by_min / max(block_h, 1)
 
-            # Оставляем только верхнюю левую часть блока дисплеев
-            if nx_min > 0.5 or ny_min > 0.8:
+            if nx_min > 0.5 or ny_min > 0.5:
                 continue
 
             # Собираем текст блока
