@@ -232,16 +232,21 @@ def detect_text_gcv(image_path: str | Path) -> str:
 def extract_massa_from_label_gcv(image_path: str | Path) -> Tuple[float | None, float]:
     """
     Распознаёт массу на этикетке через Google Cloud Vision.
-    Ищет паттерны вида «МАССА 4.122 КГ», «0.092 КГ» и т.п.
+    Ищет паттерны вида «МАССА 4.122 КГ», «0.092 КГ», «4,122 КГ» и т.п.
     Возвращает (масса в граммах или None, уверенность 0..1).
     """
     text = detect_text_gcv(image_path)
     if not text:
         return None, 0.0
 
-    # Число + КГ/г в одной строке; приоритет — значение в кг для продукта (обычно 0.0xx–1.x)
+    # Убираем типичные OCR-ошибки в цифрах (g→9, O→0)
+    def fix_digit(s: str) -> str:
+        s = s.replace("g", "9").replace("G", "9").replace("O", "0").replace("o", "0")
+        return s
+
+    # Любое число (с точкой/запятой) + кг/КГ или г (с опциональными буквами после)
     mass_re_kg = re.compile(
-        r"(?:масса|масса\s*нетто)?\s*[:\s]*(\d+(?:[.,]\d+)?)\s*кг",
+        r"(\d+(?:[.,]\d+)?)\s*[КK]г?\s*[А-ЯA-Z]*",
         re.I,
     )
     mass_re_g = re.compile(
@@ -250,20 +255,51 @@ def extract_massa_from_label_gcv(image_path: str | Path) -> Tuple[float | None, 
     )
 
     candidates: List[Tuple[float, float]] = []  # (grams, conf)
+    text_lower = text.lower()
+    has_massa = "масса" in text_lower or "macca" in text_lower or "macса" in text_lower
 
     for line in text.splitlines():
         line = line.strip()
         for regex, to_grams in [(mass_re_kg, 1000.0), (mass_re_g, 1.0)]:
-            m = regex.search(line)
-            if m:
+            for m in regex.finditer(line):
                 try:
-                    num = float(m.group(1).replace(",", "."))
+                    raw = m.group(1).replace(",", ".")
+                    raw = fix_digit(raw)
+                    num = float(raw)
                     grams = num * to_grams
                     if 0 < grams < 1_000_000:
-                        conf = 0.9 if "масса" in line.lower() or to_grams == 1000 else 0.85
+                        conf = 0.92 if has_massa else 0.88
                         candidates.append((grams, conf))
                 except ValueError:
                     continue
+
+    # Ищем по всему тексту (на случай переносов)
+    seen_grams: set[float] = {c[0] for c in candidates}
+    full_block = " ".join(text.split())
+    for regex, to_grams in [(mass_re_kg, 1000.0), (mass_re_g, 1.0)]:
+        for m in regex.finditer(full_block):
+            try:
+                raw = m.group(1).replace(",", ".")
+                raw = fix_digit(raw)
+                num = float(raw)
+                grams = num * to_grams
+                if 0 < grams < 1_000_000 and grams not in seen_grams:
+                    seen_grams.add(grams)
+                    candidates.append((grams, 0.9))
+            except ValueError:
+                continue
+
+    # Запасной вариант: в тексте есть "кг", ищем любое число 0.01–2.0 (вес продукта в кг)
+    if not candidates and ("кг" in text_lower or "кг" in text):
+        any_kg = re.findall(r"(\d+[.,]\d+)", text)
+        for raw in any_kg:
+            try:
+                raw = fix_digit(raw.replace(",", "."))
+                num = float(raw)
+                if 0.01 <= num <= 2.0:
+                    candidates.append((num * 1000, 0.75))
+            except ValueError:
+                continue
 
     if not candidates:
         return None, 0.0
@@ -271,7 +307,7 @@ def extract_massa_from_label_gcv(image_path: str | Path) -> Tuple[float | None, 
     # Предпочитаем значение в диапазоне типичного веса продукта (10–2000 г)
     in_range = [(g, c) for g, c in candidates if 10 <= g <= 2000]
     if in_range:
-        best = max(in_range, key=lambda x: x[1])
+        best = max(in_range, key=lambda x: (x[1], -abs(x[0] - 100)))  # ближе к 100г
         return best[0], best[1]
     best = max(candidates, key=lambda x: x[1])
     return best[0], best[1]

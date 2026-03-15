@@ -18,7 +18,7 @@ from utils.ocr import extract_massa_from_label, extract_massa_from_label_gcv
 
 router = Router()
 
-CONFIDENCE_THRESHOLD = 0.6
+CONFIDENCE_THRESHOLD = 0.5
 
 
 def products_kb(products: list[Product], prefix: str = "receipt_product") -> InlineKeyboardMarkup:
