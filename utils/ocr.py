@@ -12,10 +12,11 @@ import cv2
 import numpy as np
 
 try:
-    # Optional: only used when GOOGLE_APPLICATION_CREDENTIALS is configured
     from google.cloud import vision  # type: ignore[import]
+    from google.api_core import exceptions as google_exceptions  # type: ignore[import]
 except ImportError:  # pragma: no cover
     vision = None  # type: ignore[assignment]
+    google_exceptions = None  # type: ignore[assignment]
 
 # Lazy init reader to avoid loading at import
 _reader = None
@@ -210,21 +211,25 @@ def detect_text_gcv(image_path: str | Path) -> str:
     if not path.exists():
         return ""
 
-    client = vision.ImageAnnotatorClient()
-    with path.open("rb") as f:
-        content = f.read()
+    try:
+        client = vision.ImageAnnotatorClient()
+        with path.open("rb") as f:
+            content = f.read()
 
-    image = vision.Image(content=content)
-    response = client.document_text_detection(image=image)
+        image = vision.Image(content=content)
+        response = client.document_text_detection(image=image)
+    except Exception as e:
+        # 403 Billing disabled, network errors, etc. — не падаем, возвращаем пустую строку
+        if google_exceptions and isinstance(e, google_exceptions.PermissionDenied):
+            pass  # e.g. "billing must be enabled"
+        return ""
 
     if response.error.message:
-        # Не падаем, просто возвращаем пустую строку
         return ""
 
     if response.full_text_annotation and response.full_text_annotation.text:
         return response.full_text_annotation.text
 
-    # fallback: склеиваем отдельные блоки, если почему‑то нет full_text_annotation
     texts: List[str] = [t.description for t in response.text_annotations]
     return "\n".join(texts)
 
@@ -343,9 +348,13 @@ def extract_weight_with_gcv(image_path: str | Path) -> Tuple[float | None, str]:
     _, buf = cv2.imencode(".jpg", display_block)
     content = buf.tobytes()
 
-    client = vision.ImageAnnotatorClient()
-    image = vision.Image(content=content)
-    response = client.document_text_detection(image=image)
+    try:
+        client = vision.ImageAnnotatorClient()
+        image = vision.Image(content=content)
+        response = client.document_text_detection(image=image)
+    except Exception:
+        return None, ""
+
     if response.error.message:
         return None, ""
 

@@ -41,4 +41,5 @@ htmlcov/
 
 # Google Cloud credentials
 gcp-vision-key.json
+gcp-vision-key-v1.json
 *.gcp-key.json
