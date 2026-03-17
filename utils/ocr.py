@@ -335,15 +335,11 @@ def extract_massa_from_label_gcv(image_path: str | Path) -> Tuple[float | None, 
 
 def extract_weight_with_gcv(image_path: str | Path) -> Tuple[float | None, str]:
     """
-    Использует Google Cloud Vision для распознавания веса на весах.
+    Распознаёт вес на весах через Google Cloud Vision.
 
-    Алгоритм:
-      1. Кроп нижней части фото (где блок дисплеев и кнопки).
-      2. Для каждого текстового блока смотрим его bounding box.
-      3. Оставляем блоки в верхней левой части этого блока (там «ВЕС кг»).
-      4. Из текста этих блоков извлекаем число (целое/с точкой).
-
-    Возвращает (вес_кг или None, полный_распознанный_текст).
+    Отправляем в Vision только кроп области «ВЕС кг» (левая часть блока дисплеев),
+    чтобы не попадали цифры с «ЦЕНА», «СТОИМОСТЬ» и с клавиатуры.
+    Возвращает (вес_кг или None, полный_текст_с_кропа).
     """
     if vision is None:
         return None, ""
@@ -352,15 +348,23 @@ def extract_weight_with_gcv(image_path: str | Path) -> Tuple[float | None, str]:
     if not path.exists():
         return None, ""
 
-    # Кропим нижнюю часть, где блок дисплеев и кнопки
     img = cv2.imread(str(path))
     if img is None:
         return None, ""
     h, w = img.shape[:2]
-    display_block = img[int(h * 0.55) : int(h * 0.98), :]
-    block_h, block_w = display_block.shape[:2]
 
-    _, buf = cv2.imencode(".jpg", display_block)
+    # Жёсткий кроп: только левая часть кадра, где окошко «ВЕС кг»
+    # по вертикали — нижняя часть (дисплеи), по горизонтали — левые ~35%
+    row_start = int(h * 0.52)
+    row_end = int(h * 0.78)
+    col_end = int(w * 0.38)
+    weight_roi = img[row_start:row_end, 0:col_end]
+
+    if weight_roi.size == 0:
+        return None, ""
+
+    roi_h, roi_w = weight_roi.shape[:2]
+    _, buf = cv2.imencode(".jpg", weight_roi)
     content = buf.tobytes()
 
     try:
@@ -377,49 +381,27 @@ def extract_weight_with_gcv(image_path: str | Path) -> Tuple[float | None, str]:
     if response.full_text_annotation and response.full_text_annotation.text:
         full_text = response.full_text_annotation.text
 
-    # Верхний левый квадрант блока дисплеев = окошко «ВЕС кг»
-    candidates: List[Tuple[float, float]] = []  # (value_kg, score)
+    # На кропе только вес — берём любое число в разумном диапазоне (кг)
+    candidates: List[float] = []
 
     for page in response.full_text_annotation.pages:
         for block in page.blocks:
-            xs = [v.x for v in block.bounding_box.vertices]
-            ys = [v.y for v in block.bounding_box.vertices]
-            if not xs or not ys:
-                continue
-            bx_min = min(xs)
-            by_min = min(ys)
-
-            # Координаты в системе display_block (0..block_w, 0..block_h)
-            nx_min = bx_min / max(block_w, 1)
-            ny_min = by_min / max(block_h, 1)
-
-            if nx_min > 0.5 or ny_min > 0.5:
-                continue
-
-            # Собираем текст блока
-            block_text_parts: List[str] = []
             for para in block.paragraphs:
                 for word in para.words:
-                    word_text = "".join([s.text for s in word.symbols])
-                    block_text_parts.append(word_text)
-            block_text = " ".join(block_text_parts)
-
-            # Ищем число в этом тексте
-            m = re.search(r"(\d+(?:[.,]\d+)?)", block_text)
-            if not m:
-                continue
-            try:
-                val = float(m.group(1).replace(",", "."))
-            except ValueError:
-                continue
-            # Простой скор: чем левее/выше, тем лучше
-            score = (1.0 - nx_min) + (1.0 - ny_min)
-            candidates.append((val, score))
+                    word_text = "".join(s.text for s in word.symbols)
+                    for m in re.finditer(r"(\d+(?:[.,]\d+)?)", word_text):
+                        try:
+                            val = float(m.group(1).replace(",", "."))
+                            if 0.001 <= val <= 50.0:
+                                candidates.append(val)
+                        except ValueError:
+                            continue
 
     if not candidates:
         return None, full_text
 
-    # Берём самое «левое‑верхнее» число
-    candidates.sort(key=lambda x: x[1], reverse=True)
-    value_kg = candidates[0][0]
-    return value_kg, full_text
+    # Предпочитаем число с десятичной точкой (формат дисплея 2.020)
+    with_decimal = [c for c in candidates if c != int(c)]
+    if with_decimal:
+        return with_decimal[0], full_text
+    return candidates[0], full_text
