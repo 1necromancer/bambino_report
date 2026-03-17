@@ -121,39 +121,49 @@ def extract_massa_from_label(image_path: str | Path) -> Tuple[float | None, floa
 
     reader = _get_reader()
     results = reader.readtext(cropped)
-    mass_value = None
-    best_conf = 0.0
+    candidates: List[Tuple[float, float]] = []  # (grams, conf)
 
-    # 1) Пытаемся найти паттерн "МАССА N ..." в одной строке
-    mass_re = re.compile(
-        r"масса\s*[:\s]*(\d+(?:[.,]\d+)?)\s*(?:кг|кгт|г|грамм|нетто)?", re.I
+    # Число + кг → граммы; число + г → граммы
+    mass_re_kg = re.compile(
+        r"масса\s*[:\s]*(\d+(?:[.,]\d+)?)\s*(?:кг|кгт)?", re.I
     )
-    # 2) Если 'МАССА' и число разорваны (как в вашем примере),
-    #    ищем просто число с единицами измерения.
-    num_with_unit_re = re.compile(
-        r"(\d+(?:[.,]\d+)?)\s*(?:кг|кгт|г|грамм|нетто)", re.I
+    num_kg_re = re.compile(
+        r"(\d+(?:[.,]\d+)?)\s*[КK]г", re.I
+    )
+    num_g_re = re.compile(
+        r"(\d+(?:[.,]\d+)?)\s*г(?:рамм)?", re.I
     )
 
     for (_bbox, text, conf) in results:
         text_clean = text.replace("\n", " ")
 
-        m = mass_re.search(text_clean)
-        if not m:
-            m = num_with_unit_re.search(text_clean)
+        for regex, to_grams in [(mass_re_kg, 1000.0), (num_kg_re, 1000.0), (num_g_re, 1.0)]:
+            m = regex.search(text_clean)
+            if m:
+                try:
+                    num_str = m.group(1).replace(",", ".")
+                    value = float(num_str)
+                    grams = value * to_grams
+                    if 0 < grams < 1_000_000:
+                        candidates.append((grams, conf))
+                except ValueError:
+                    pass
+                break
 
-        if m:
-            try:
-                num_str = m.group(1).replace(",", ".")
-                value = float(num_str)
-            except ValueError:
-                continue
+    if not candidates:
+        return None, 0.0
 
-            # сохраняем вариант с наибольшей уверенностью
-            if value is not None and conf >= best_conf:
-                mass_value = value
-                best_conf = conf
-
-    return mass_value, float(best_conf) if best_conf else 0.0
+    # Приход = масса поставки (1–100 кг). Предпочитаем её.
+    receipt_range = [(g, c) for g, c in candidates if 1000 <= g <= 100_000]
+    if receipt_range:
+        best = max(receipt_range, key=lambda x: x[1])
+        return best[0], best[1]
+    in_range = [(g, c) for g, c in candidates if 10 <= g <= 2000]
+    if in_range:
+        best = max(in_range, key=lambda x: x[1])
+        return best[0], best[1]
+    best = max(candidates, key=lambda x: x[1])
+    return best[0], best[1]
 
 
 def extract_weight_from_scale_image(image_path: str | Path) -> Tuple[float | None, float]:
@@ -309,10 +319,15 @@ def extract_massa_from_label_gcv(image_path: str | Path) -> Tuple[float | None, 
     if not candidates:
         return None, 0.0
 
-    # Предпочитаем значение в диапазоне типичного веса продукта (10–2000 г)
+    # Приход товара = масса поставки (партии), обычно 1–100 кг. Предпочитаем её.
+    receipt_range = [(g, c) for g, c in candidates if 1000 <= g <= 100_000]
+    if receipt_range:
+        best = max(receipt_range, key=lambda x: x[1])
+        return best[0], best[1]
+    # Иначе — масса одной упаковки (10–2000 г)
     in_range = [(g, c) for g, c in candidates if 10 <= g <= 2000]
     if in_range:
-        best = max(in_range, key=lambda x: (x[1], -abs(x[0] - 100)))  # ближе к 100г
+        best = max(in_range, key=lambda x: x[1])
         return best[0], best[1]
     best = max(candidates, key=lambda x: x[1])
     return best[0], best[1]
