@@ -120,7 +120,9 @@ async def inventory_photo(
     await message.answer("Обрабатываю фото весов…")
     actual_raw = None
     try:
-        weight_kg, _ = await asyncio.to_thread(extract_weight_with_gcv, path)
+        weight_kg, _ = await asyncio.to_thread(
+            extract_weight_with_gcv, path, float(expected_weight)
+        )
         if weight_kg is not None:
             actual_raw = weight_kg * 1000  # кг → граммы
         if actual_raw is None:

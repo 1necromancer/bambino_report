@@ -333,12 +333,16 @@ def extract_massa_from_label_gcv(image_path: str | Path) -> Tuple[float | None, 
     return best[0], best[1]
 
 
-def extract_weight_with_gcv(image_path: str | Path) -> Tuple[float | None, str]:
+def extract_weight_with_gcv(
+    image_path: str | Path,
+    expected_grams: float | None = None,
+) -> Tuple[float | None, str]:
     """
     Распознаёт вес на весах через Google Cloud Vision.
 
-    Отправляем в Vision только кроп области «ВЕС кг» (левая часть блока дисплеев),
-    чтобы не попадали цифры с «ЦЕНА», «СТОИМОСТЬ» и с клавиатуры.
+    Кроп области «ВЕС кг», затем из всех чисел в 0.1–50 кг выбираем одно.
+    Если передан expected_grams — берём значение, ближайшее к ожидаемому (в кг),
+    чтобы отсечь 5.0 с клавиатуры при ожидаемом ~2 кг.
     Возвращает (вес_кг или None, полный_текст_с_кропа).
     """
     if vision is None:
@@ -380,7 +384,7 @@ def extract_weight_with_gcv(image_path: str | Path) -> Tuple[float | None, str]:
     if response.full_text_annotation and response.full_text_annotation.text:
         full_text = response.full_text_annotation.text
 
-    # На кропе только вес — берём любое число в разумном диапазоне (кг)
+    # Собираем все числа с кропа
     candidates: List[float] = []
 
     for page in response.full_text_annotation.pages:
@@ -390,18 +394,27 @@ def extract_weight_with_gcv(image_path: str | Path) -> Tuple[float | None, str]:
                     word_text = "".join(s.text for s in word.symbols)
                     for m in re.finditer(r"(\d+(?:[.,]\d+)?)", word_text):
                         try:
-                            val = float(m.group(1).replace(",", "."))
+                            raw = m.group(1).replace(",", ".")
+                            val = float(raw)
                             if 0.001 <= val <= 50.0:
                                 candidates.append(val)
+                            # Дисплей мог распознаться как "2020" без точки — тогда это граммы
+                            if 100 <= val <= 50_000 and expected_grams is not None:
+                                candidates.append(val / 1000.0)
                         except ValueError:
                             continue
 
-    # Отбрасываем явно не вес дисплея (0.00, 0.000 от цены/суммы)
-    candidates = [c for c in candidates if c >= 0.1]
+    candidates = [c for c in candidates if c >= 0.1 and c <= 50.0]
     if not candidates:
         return None, full_text
 
-    # Предпочитаем число с десятичной точкой (формат 2.020) и побольше (основной вес)
+    # Если знаем ожидаемый вес — берём кандидат, ближайший к нему (в кг)
+    if expected_grams is not None and expected_grams > 0:
+        expected_kg = expected_grams / 1000.0
+        best = min(candidates, key=lambda c: abs(c - expected_kg))
+        return best, full_text
+
+    # Иначе — число с десятичной точкой (формат 2.020) или максимальное
     with_decimal = [c for c in candidates if c != int(c)]
     if with_decimal:
         return max(with_decimal), full_text
