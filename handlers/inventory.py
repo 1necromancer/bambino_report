@@ -142,8 +142,8 @@ async def inventory_photo(
         await state.update_data(inventory_current_product_id=product_id)
         return
 
-    # Защита от явной ошибки OCR
-    if actual_raw > 50_000 or (expected_weight and actual_raw > expected_weight * 5):
+    # Отклоняем только явно нереалистичные значения (> 50 кг)
+    if actual_raw > 50_000:
         await message.answer(
             f"Распознано {actual_raw:.0f} г — похоже на ошибку. Введите вес вручную (граммы):"
         )
