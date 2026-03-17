@@ -353,17 +353,16 @@ def extract_weight_with_gcv(image_path: str | Path) -> Tuple[float | None, str]:
         return None, ""
     h, w = img.shape[:2]
 
-    # Жёсткий кроп: только левая часть кадра, где окошко «ВЕС кг»
-    # по вертикали — нижняя часть (дисплеи), по горизонтали — левые ~35%
-    row_start = int(h * 0.52)
-    row_end = int(h * 0.78)
-    col_end = int(w * 0.38)
+    # Кроп области «ВЕС кг»: левая часть кадра, дисплеи по вертикали
+    # чуть шире/ниже, чтобы не обрезать цифры на разных ракурсах
+    row_start = int(h * 0.50)
+    row_end = int(h * 0.85)
+    col_end = int(w * 0.45)
     weight_roi = img[row_start:row_end, 0:col_end]
 
     if weight_roi.size == 0:
         return None, ""
 
-    roi_h, roi_w = weight_roi.shape[:2]
     _, buf = cv2.imencode(".jpg", weight_roi)
     content = buf.tobytes()
 
@@ -397,11 +396,13 @@ def extract_weight_with_gcv(image_path: str | Path) -> Tuple[float | None, str]:
                         except ValueError:
                             continue
 
+    # Отбрасываем явно не вес дисплея (0.00, 0.000 от цены/суммы)
+    candidates = [c for c in candidates if c >= 0.1]
     if not candidates:
         return None, full_text
 
-    # Предпочитаем число с десятичной точкой (формат дисплея 2.020)
+    # Предпочитаем число с десятичной точкой (формат 2.020) и побольше (основной вес)
     with_decimal = [c for c in candidates if c != int(c)]
     if with_decimal:
-        return with_decimal[0], full_text
-    return candidates[0], full_text
+        return max(with_decimal), full_text
+    return max(candidates), full_text
