@@ -58,7 +58,11 @@ async def receipt_product_chosen(
     await state.update_data(receipt_product_id=product_id, receipt_product_name=product.name)
     await state.set_state("receipt_wait_photo")
     await callback.message.edit_text(
-        f"Сорт: {product.name}. Отправьте фото этикетки (с текстом МАССА N)."
+        f"Сорт: {product.name}. Отправьте фото этикетки (с текстом МАССА N).",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="« Назад к сортам", callback_data="receipt_start")],
+            [InlineKeyboardButton(text="« В меню", callback_data="menu")],
+        ]),
     )
     await callback.answer()
 
@@ -98,7 +102,10 @@ async def receipt_photo(
         await state.update_data(receipt_need_manual=True)
         await state.set_state("receipt_wait_manual")
         await message.answer(
-            "Не удалось уверенно распознать массу. Введите массу вручную (число в граммах):"
+            "Не удалось уверенно распознать массу. Введите массу вручную (число в граммах):",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="« В меню", callback_data="menu")],
+            ]),
         )
         return
 

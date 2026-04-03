@@ -93,7 +93,12 @@ async def _save_inventory_result(
 async def _ask_manual(message: Message, state: FSMContext, product_id: int, text: str) -> None:
     await state.set_state("inventory_manual_weight")
     await state.update_data(inventory_current_product_id=product_id)
-    await message.answer(text)
+    await message.answer(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="« В меню", callback_data="menu")],
+        ]),
+    )
 
 
 # ── flow ─────────────────────────────────────────────────────────────
@@ -166,7 +171,12 @@ async def _ask_next_photo(
         return
     item = inventory_list[idx]
     name = item["product_name"]
-    await message.answer(f"Фото весов для сорта «{name}» (красные цифры на дисплее):")
+    await message.answer(
+        f"Фото весов для сорта «{name}» (красные цифры на дисплее):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="« В меню", callback_data="menu")],
+        ]),
+    )
 
 
 @router.message(F.photo, StateFilter("inventory_photo"))

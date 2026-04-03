@@ -112,7 +112,13 @@ async def sales_size_chosen(
         sales_sale_price=float(price_row.sale_price),
     )
     await state.set_state("sales_enter_quantity")
-    await callback.message.edit_text("Введите количество проданных порций (целое число):")
+    await callback.message.edit_text(
+        "Введите количество проданных порций (целое число):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="« Назад к сортам", callback_data="sales_start")],
+            [InlineKeyboardButton(text="« В меню", callback_data="menu")],
+        ]),
+    )
     await callback.answer()
 
 

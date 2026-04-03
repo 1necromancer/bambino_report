@@ -1,5 +1,13 @@
 from aiogram import F, Router
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.fsm.context import FSMContext
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+)
 
 router = Router()
 
@@ -13,8 +21,17 @@ def main_kb() -> InlineKeyboardMarkup:
     ])
 
 
-@router.message(F.text.in_({"/start", "Меню", "меню"}))
-async def cmd_start(message: Message) -> None:
+PERSISTENT_KB = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="Меню")]],
+    resize_keyboard=True,
+    is_persistent=True,
+)
+
+
+@router.message(F.text.in_({"/start", "/menu", "Меню", "меню"}))
+async def cmd_start(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("⬇️", reply_markup=PERSISTENT_KB)
     await message.answer(
         "Меню учёта мороженого:",
         reply_markup=main_kb(),
@@ -22,6 +39,7 @@ async def cmd_start(message: Message) -> None:
 
 
 @router.callback_query(F.data == "menu")
-async def back_to_menu(callback: CallbackQuery) -> None:
+async def back_to_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
     await callback.message.edit_text("Меню учёта мороженого:", reply_markup=main_kb())
     await callback.answer()
