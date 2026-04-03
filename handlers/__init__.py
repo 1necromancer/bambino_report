@@ -1,10 +1,11 @@
 from aiogram import Router
 
-from handlers import fallback, inventory, receipt, report, sales, stock
+from handlers import admin, fallback, inventory, receipt, report, sales, stock
 from handlers.menu import router as menu_router
 
 router = Router(name="main")
 router.include_router(menu_router)
+router.include_router(admin.router)
 router.include_router(receipt.router)
 router.include_router(sales.router)
 router.include_router(inventory.router)
