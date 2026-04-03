@@ -21,8 +21,13 @@ async def main() -> None:
             return
         products_data = [
             ("Пломбир", Decimal("0.05"), Decimal("50")),
-            ("Ваниль", Decimal("0.04"), Decimal("45")),
-            ("Шоколад", Decimal("0.06"), Decimal("55")),
+            ("Ваниль", Decimal("0.04"), Decimal("50")),
+            ("Шоколад", Decimal("0.06"), Decimal("50")),
+        ]
+        sizes_prices = [
+            (90, 700),
+            (150, 1000),
+            (210, 1500),
         ]
         for name, cost_per_gram, tare in products_data:
             p = Product(
@@ -33,7 +38,7 @@ async def main() -> None:
             )
             session.add(p)
             await session.flush()
-            for size, price in [(300, 150), (500, 220), (700, 290)]:
+            for size, price in sizes_prices:
                 session.add(Price(product_id=p.id, size_grams=size, sale_price=Decimal(str(price))))
         await session.commit()
         print("Добавлены продукты и цены.")

@@ -78,7 +78,7 @@ async def _save_inventory_result(
     await message.answer(
         f"«{product_name}»: ожидаемый {expected_weight:.0f} г, "
         f"с фото {actual_net:.1f} г, разница {discrepancy:.1f} г. "
-        f"Штраф: {penalty:.2f} ₽."
+        f"Штраф: {penalty:.2f} ₸."
     )
 
     await state.update_data(
@@ -246,9 +246,14 @@ async def inventory_photo(
     )
     await state.set_state("inventory_confirm")
 
+    tare_line = ""
+    if tare_weight:
+        tare_line = f"Тара: {tare_weight:.0f} г\nНетто: <b>{_fmt_kg(actual_net)}</b> ({actual_net:.0f} г)\n"
+
     await message.answer(
         f"«{product_name}»\n"
         f"Распознано с фото: <b>{_fmt_kg(actual_raw)}</b> ({actual_raw:.0f} г)\n"
+        f"{tare_line}"
         f"Ожидаемый по базе: <b>{_fmt_kg(expected_weight)}</b> ({expected_weight:.0f} г)\n\n"
         "Это верно?",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[

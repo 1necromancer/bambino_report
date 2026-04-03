@@ -54,7 +54,7 @@ async def stock_show(callback: CallbackQuery, session: AsyncSession) -> None:
         lines.append(f"• {name}: остаток {weight_str}")
         if item["prices"]:
             prices_str = ", ".join(
-                f"{size} г — {price:.0f} ₽" for size, price in item["prices"]
+                f"{size} г — {price:.0f} ₸" for size, price in item["prices"]
             )
             lines.append(f"  Цены: {prices_str}")
         lines.append("")

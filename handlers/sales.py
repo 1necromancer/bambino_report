@@ -145,7 +145,7 @@ async def sales_quantity(
     grams = size_grams * qty
     await state.clear()
     await message.answer(
-        f"Добавлено: {product_name}, {size_grams} г × {qty} = {grams} г, выручка {revenue} ₽.\n\nДобавить ещё или завершить отчёт?",
+        f"Добавлено: {product_name}, {size_grams} г × {qty} = {grams} г, выручка {revenue} ₸.\n\nДобавить ещё или завершить отчёт?",
         reply_markup=add_or_finish_kb(),
     )
 

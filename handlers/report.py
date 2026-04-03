@@ -40,13 +40,13 @@ async def report_show(callback: CallbackQuery, session: AsyncSession) -> None:
         total_revenue += revenue or 0
         total_penalty += penalty or 0
         disc_str = f"{disc:+.1f} г" if disc is not None else "—"
-        lines.append(f"• {name}: выручка {revenue:.2f} ₽, разница {disc_str}, штраф {penalty:.2f} ₽")
+        lines.append(f"• {name}: выручка {revenue:.2f} ₸, разница {disc_str}, штраф {penalty:.2f} ₸")
     overuse = sum((r[2] or 0) for r in rows if (r[2] or 0) < 0)
     overuse_grams = abs(overuse) if overuse else 0
     lines.append("")
-    lines.append(f"Итого выручка: {total_revenue:.2f} ₽")
+    lines.append(f"Итого выручка: {total_revenue:.2f} ₸")
     lines.append(f"Перерасход: {overuse_grams:.1f} г")
-    lines.append(f"Итоговый штраф: {total_penalty:.2f} ₽")
+    lines.append(f"Итоговый штраф: {total_penalty:.2f} ₸")
 
     await callback.message.edit_text(
         "\n".join(lines),
