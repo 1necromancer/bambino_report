@@ -16,8 +16,6 @@ from database.models import Price, Product, SaleEntry
 
 router = Router()
 
-SIZES = [300, 500, 700]
-
 
 def products_kb(products: list[Product]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -26,15 +24,17 @@ def products_kb(products: list[Product]) -> InlineKeyboardMarkup:
     ] + [[InlineKeyboardButton(text="« В меню", callback_data="menu")]])
 
 
-def sizes_kb(product_id: int) -> InlineKeyboardMarkup:
+def sizes_kb(prices: list[Price]) -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(
+            text=f"{int(p.size_grams)} г — {int(p.sale_price)} ₸",
+            callback_data=f"sales_size_{p.product_id}_{int(p.size_grams)}",
+        )
+        for p in sorted(prices, key=lambda x: x.size_grams)
+    ]
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="300 г", callback_data=f"sales_size_{product_id}_300"),
-            InlineKeyboardButton(text="500 г", callback_data=f"sales_size_{product_id}_500"),
-            InlineKeyboardButton(text="700 г", callback_data=f"sales_size_{product_id}_700"),
-        ],
-        [InlineKeyboardButton(text="« В меню", callback_data="menu")],
-    ])
+        [b] for b in buttons
+    ] + [[InlineKeyboardButton(text="« В меню", callback_data="menu")]])
 
 
 def add_or_finish_kb() -> InlineKeyboardMarkup:
@@ -76,11 +76,18 @@ async def sales_product_chosen(
     if not product:
         await callback.answer("Продукт не найден.", show_alert=True)
         return
+    prices_result = await session.execute(
+        select(Price).where(Price.product_id == product_id).order_by(Price.size_grams)
+    )
+    prices = list(prices_result.scalars().all())
+    if not prices:
+        await callback.answer("Нет цен для этого сорта.", show_alert=True)
+        return
     await state.update_data(sales_product_id=product_id, sales_product_name=product.name)
     await state.set_state("sales_choose_size")
     await callback.message.edit_text(
-        f"Сорт: {product.name}. Выберите вес:",
-        reply_markup=sizes_kb(product_id),
+        f"Сорт: {product.name}. Выберите порцию:",
+        reply_markup=sizes_kb(prices),
     )
     await callback.answer()
 
@@ -92,9 +99,6 @@ async def sales_size_chosen(
     parts = callback.data.split("_")
     product_id = int(parts[2])
     size_grams = int(parts[3])
-    if size_grams not in SIZES:
-        await callback.answer("Неверный размер.", show_alert=True)
-        return
     result = await session.execute(
         select(Price).where(Price.product_id == product_id, Price.size_grams == size_grams)
     )

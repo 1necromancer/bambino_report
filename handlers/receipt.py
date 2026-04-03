@@ -105,8 +105,16 @@ async def receipt_photo(
     await _apply_receipt(session, product_id, Decimal(str(mass_value)))
     await state.clear()
     await message.answer(
-        f"Приход по сорту «{product_name}»: +{mass_value} г. Остаток обновлён."
+        f"Приход по сорту «{product_name}»: +{mass_value} г. Остаток обновлён.",
+        reply_markup=_after_receipt_kb(),
     )
+
+
+def _after_receipt_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Ещё приход", callback_data="receipt_start")],
+        [InlineKeyboardButton(text="« В меню", callback_data="menu")],
+    ])
 
 
 @router.message(F.text, StateFilter("receipt_wait_manual"))
@@ -126,7 +134,10 @@ async def receipt_manual(
     product_name = data["receipt_product_name"]
     await _apply_receipt(session, product_id, Decimal(str(mass_value)))
     await state.clear()
-    await message.answer(f"Приход по сорту «{product_name}»: +{mass_value} г. Остаток обновлён.")
+    await message.answer(
+        f"Приход по сорту «{product_name}»: +{mass_value} г. Остаток обновлён.",
+        reply_markup=_after_receipt_kb(),
+    )
 
 
 async def _apply_receipt(
