@@ -436,36 +436,17 @@ def _pick_best_candidate(
     return max(filtered)
 
 
-def extract_weight_with_gcv(
-    image_path: str | Path,
-    expected_grams: float | None = None,
-) -> Tuple[float | None, str]:
-    """
-    Распознаёт вес на весах через Google Cloud Vision.
-    Отправляет предобработанное изображение (только красные цифры на чёрном фоне).
-    Возвращает (вес_кг или None, полный_текст).
-    """
-    if vision is None:
-        return None, ""
-
-    preprocessed = _prepare_scale_roi(image_path)
-    if preprocessed is None or preprocessed.size == 0:
-        return None, ""
-
-    # Увеличиваем контраст для GCV: маленькие цифры плохо читаются
-    scaled = cv2.resize(preprocessed, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-    _, buf = cv2.imencode(".png", scaled)
-    content = buf.tobytes()
-
+def _gcv_detect_words(content: bytes) -> Tuple[List[str], str]:
+    """Отправляет изображение в GCV, возвращает (список слов, полный текст)."""
     try:
         client = vision.ImageAnnotatorClient()
         image = vision.Image(content=content)
         response = client.document_text_detection(image=image)
     except Exception:
-        return None, ""
+        return [], ""
 
     if response.error.message:
-        return None, ""
+        return [], ""
 
     full_text = ""
     if response.full_text_annotation and response.full_text_annotation.text:
@@ -482,6 +463,53 @@ def extract_weight_with_gcv(
     if not word_texts and full_text:
         word_texts = full_text.split()
 
-    candidates = _parse_scale_candidates(word_texts)
-    best = _pick_best_candidate(candidates, expected_grams)
+    return word_texts, full_text
+
+
+def extract_weight_with_gcv(
+    image_path: str | Path,
+    expected_grams: float | None = None,
+) -> Tuple[float | None, str]:
+    """
+    Распознаёт вес на весах через Google Cloud Vision.
+    Стратегия: два прохода — сначала сырой кроп дисплея (GCV хорошо читает
+    реальные фото), потом предобработанный (белые цифры на чёрном).
+    Объединяет кандидатов и выбирает лучшего.
+    Возвращает (вес_кг или None, полный_текст).
+    """
+    if vision is None:
+        return None, ""
+
+    path = Path(image_path)
+    if not path.exists():
+        return None, ""
+    img = cv2.imread(str(path))
+    if img is None:
+        return None, ""
+
+    h, w = img.shape[:2]
+    all_candidates: List[float] = []
+    full_text = ""
+
+    # ── Проход 1: сырой кроп области дисплея → GCV ────────────────
+    row_start, row_end = int(h * 0.45), int(h * 0.90)
+    col_end = int(w * 0.50)
+    raw_roi = img[row_start:row_end, 0:col_end]
+    if raw_roi.size > 0:
+        _, buf = cv2.imencode(".jpg", raw_roi)
+        words, txt = _gcv_detect_words(buf.tobytes())
+        full_text = txt
+        all_candidates.extend(_parse_scale_candidates(words))
+
+    # ── Проход 2: предобработанное изображение → GCV ──────────────
+    preprocessed = _prepare_scale_roi(image_path)
+    if preprocessed is not None and preprocessed.size > 0:
+        scaled = cv2.resize(preprocessed, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        _, buf = cv2.imencode(".png", scaled)
+        words2, txt2 = _gcv_detect_words(buf.tobytes())
+        all_candidates.extend(_parse_scale_candidates(words2))
+        if not full_text:
+            full_text = txt2
+
+    best = _pick_best_candidate(all_candidates, expected_grams)
     return best, full_text
