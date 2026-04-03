@@ -52,54 +52,82 @@ def _resize_for_ocr(img: np.ndarray, max_side: int = 1300) -> np.ndarray:
     return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
 
-def preprocess_scale_display(img: np.ndarray) -> np.ndarray:
+def _hsv_red_mask(img: np.ndarray) -> np.ndarray:
+    """HSV-маска для выделения красных пикселей (LED-сегменты)."""
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    mask1 = cv2.inRange(hsv, np.array([0, 60, 60]), np.array([12, 255, 255]))
+    mask2 = cv2.inRange(hsv, np.array([155, 60, 60]), np.array([179, 255, 255]))
+    return cv2.bitwise_or(mask1, mask2)
+
+
+def _find_display_roi(img: np.ndarray) -> np.ndarray | None:
     """
-    Предобработка изображения дисплея весов:
-    - кроп области левого верхнего окошка «ВЕС кг»
-    - маска по красному цвету в HSV
-    - лёгкий морфологический фильтр
+    Автоматически находит область красного дисплея «ВЕС кг»:
+    ищет крупнейший прямоугольный контур с красными пикселями
+    в левой верхней части зоны дисплеев.
+    Возвращает кроп или None.
+    """
+    mask = _hsv_red_mask(img)
+    h, w = img.shape[:2]
+
+    # Ищем контуры красных областей
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    # Фильтруем: только контуры в верхней левой половине и достаточного размера
+    best_roi = None
+    best_area = 0
+    min_area = (h * w) * 0.002  # минимум 0.2% от площади
+
+    for cnt in contours:
+        x, y, cw, ch = cv2.boundingRect(cnt)
+        area = cw * ch
+        cx = x + cw / 2
+        cy = y + ch / 2
+        # Ожидаем дисплей «ВЕС» в левой половине, верхней 2/3
+        if cx > w * 0.55 or cy > h * 0.7:
+            continue
+        if area < min_area:
+            continue
+        if area > best_area:
+            best_area = area
+            # Расширяем bbox чуть-чуть для запаса
+            pad_x, pad_y = int(cw * 0.15), int(ch * 0.15)
+            x1 = max(0, x - pad_x)
+            y1 = max(0, y - pad_y)
+            x2 = min(w, x + cw + pad_x)
+            y2 = min(h, y + ch + pad_y)
+            best_roi = img[y1:y2, x1:x2]
+
+    return best_roi
+
+
+def preprocess_scale_for_ocr(img: np.ndarray) -> np.ndarray:
+    """
+    Полный пайплайн подготовки изображения весов для EasyOCR:
+    1) HSV-маска красного → убирает весь нецифровой шум
+    2) Бинаризация (threshold)
+    3) Дилатация (dilate) — «склеивает» сегменты в сплошные цифры
+    4) Закрытие (close) — заполняет оставшиеся дырки
     """
     if img is None or img.size == 0:
         return img
 
-    img = _resize_for_ocr(img, max_side=800)
-    h, w = img.shape[:2]
-    # Эмпирический кроп под ваши весы:
-    # верхние 40% дисплея, левая треть — там окошко «ВЕС кг»
-    top = int(h * 0.05)
-    bottom = int(h * 0.55)
-    left = int(w * 0.05)
-    right = int(w * 0.45)
-    crop = img[top:bottom, left:right]
-    if crop.size == 0:
-        crop = img
+    mask = _hsv_red_mask(img)
 
-    # Переводим в HSV и выделяем красные пиксели
-    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-    # Красный в HSV обычно попадает в два диапазона (через 180):
-    lower_red1 = np.array([0, 70, 70])
-    upper_red1 = np.array([10, 255, 255])
-    lower_red2 = np.array([160, 70, 70])
-    upper_red2 = np.array([179, 255, 255])
+    # Бинаризация (маска уже 0/255, но на всякий случай)
+    _, binary = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
 
-    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-    mask = cv2.bitwise_or(mask1, mask2)
+    # Дилатация: делаем сегменты толще, чтобы EasyOCR видел цельные цифры
+    dilate_kernel = np.ones((3, 3), np.uint8)
+    dilated = cv2.dilate(binary, dilate_kernel, iterations=2)
 
-    # Немного морфологии, чтобы цифры стали сплошнее
-    kernel = np.ones((3, 3), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    # Закрытие: заполняем мелкие разрывы внутри цифр
+    close_kernel = np.ones((5, 5), np.uint8)
+    closed = cv2.morphologyEx(dilated, cv2.MORPH_CLOSE, close_kernel, iterations=1)
 
-    return mask
-
-
-def _preprocess_scale_red(img: np.ndarray) -> np.ndarray:
-    """
-    Усиление красного и порог для дисплея весов (красные цифры, блики).
-    Использует preprocess_scale_display для единого пайплайна.
-    """
-    return preprocess_scale_display(img)
+    return closed
 
 
 def extract_massa_from_label(image_path: str | Path) -> Tuple[float | None, float]:
@@ -166,9 +194,17 @@ def extract_massa_from_label(image_path: str | Path) -> Tuple[float | None, floa
     return best[0], best[1]
 
 
-def extract_weight_from_scale_image(image_path: str | Path) -> Tuple[float | None, float]:
+def extract_weight_from_scale_image(
+    image_path: str | Path,
+    expected_grams: float | None = None,
+) -> Tuple[float | None, float]:
     """
-    Распознаёт вес (красные цифры) на фото весов после предобработки.
+    Распознаёт вес на фото весов через EasyOCR с полным пайплайном:
+    1) Кроп нижней части кадра (блок дисплеев).
+    2) Автодетект ROI по красным контурам ИЛИ эмпирический кроп.
+    3) HSV-маска → бинаризация → дилатация → сплошные цифры.
+    4) EasyOCR с allowlist='0123456789.' и paragraph=False.
+    5) Логический фильтр: если есть expected_grams — берём ±500 г.
     Возвращает (вес в граммах или None, уверенность).
     """
     path = Path(image_path)
@@ -178,33 +214,64 @@ def extract_weight_from_scale_image(image_path: str | Path) -> Tuple[float | Non
     if img is None:
         return None, 0.0
 
-    # Для весов оставляем нижнюю часть кадра, где расположен блок дисплеев и кнопки.
     h, w = img.shape[:2]
-    display_block = img[int(h * 0.55) : int(h * 0.98), :]
+    display_block = img[int(h * 0.50) : int(h * 0.95), :]
     display_block = _resize_for_ocr(display_block, max_side=800)
 
-    # Предобработка: выделяем только красный сегмент лев. верхнего окна «ВЕС кг»
-    preprocessed = preprocess_scale_display(display_block)
+    # Пробуем автоматически найти область дисплея по красным контурам
+    roi = _find_display_roi(display_block)
+    if roi is None or roi.size == 0:
+        # Эмпирический кроп: левое верхнее окошко «ВЕС кг»
+        dh, dw = display_block.shape[:2]
+        roi = display_block[0 : int(dh * 0.55), 0 : int(dw * 0.45)]
+
+    if roi is None or roi.size == 0:
+        return None, 0.0
+
+    preprocessed = preprocess_scale_for_ocr(roi)
 
     reader = _get_reader()
-    # Ограничиваем алфавит только цифрами и точкой
-    results = reader.readtext(preprocessed, allowlist="0123456789.")
-    weight_value = None
-    best_conf = 0.0
-    # Число: целое или с точкой/запятой, возможно с 'г' или 'гр'
-    num_re = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:г|гр|грамм)?")
-    for (bbox, text, conf) in results:
-        m = num_re.search(text.strip())
-        if m:
+    results = reader.readtext(
+        preprocessed,
+        allowlist="0123456789.",
+        paragraph=False,
+    )
+
+    candidates: List[Tuple[float, float]] = []  # (grams, conf)
+    for (_bbox, text, conf) in results:
+        text = text.strip()
+        if not text:
+            continue
+        for m in re.finditer(r"(\d+(?:\.\d+)?)", text):
             try:
-                num_str = m.group(1).replace(",", ".")
-                w = float(num_str)
-                if 0 < w < 1_000_000:  # разумный диапазон для веса в граммах
-                    weight_value = w
-                    best_conf = max(best_conf, conf)
+                val = float(m.group(1))
             except ValueError:
                 continue
-    return weight_value, float(best_conf) if best_conf else 0.0
+            # Интерпретируем: если 0.001–50 → кг, если 100–50000 → граммы
+            if 0.001 <= val <= 50.0:
+                candidates.append((val * 1000, conf))  # кг → г
+            if 100 <= val <= 50_000:
+                candidates.append((val, conf))  # уже граммы
+
+    if not candidates:
+        return None, 0.0
+
+    # Логический фильтр: если знаем ожидаемый вес, берём ±500 г
+    if expected_grams is not None and expected_grams > 0:
+        in_range = [
+            (g, c) for g, c in candidates
+            if abs(g - expected_grams) <= 500
+        ]
+        if in_range:
+            best = min(in_range, key=lambda x: abs(x[0] - expected_grams))
+            return best[0], best[1]
+        # Ничего в ±500 г — берём ближайшее
+        best = min(candidates, key=lambda x: abs(x[0] - expected_grams))
+        return best[0], best[1]
+
+    # Без ожидаемого — берём значение с максимальной уверенностью
+    best = max(candidates, key=lambda x: x[1])
+    return best[0], best[1]
 
 
 def detect_text_gcv(image_path: str | Path) -> str:

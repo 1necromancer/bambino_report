@@ -127,7 +127,7 @@ async def inventory_photo(
             actual_raw = weight_kg * 1000  # кг → граммы
         if actual_raw is None:
             actual_raw, _ = await asyncio.to_thread(
-                extract_weight_from_scale_image, path
+                extract_weight_from_scale_image, path, float(expected_weight)
             )
     except Exception:
         pass
