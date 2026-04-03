@@ -199,36 +199,13 @@ def extract_weight_from_scale_image(
     expected_grams: float | None = None,
 ) -> Tuple[float | None, float]:
     """
-    Распознаёт вес на фото весов через EasyOCR с полным пайплайном:
-    1) Кроп нижней части кадра (блок дисплеев).
-    2) Автодетект ROI по красным контурам ИЛИ эмпирический кроп.
-    3) HSV-маска → бинаризация → дилатация → сплошные цифры.
-    4) EasyOCR с allowlist='0123456789.' и paragraph=False.
-    5) Логический фильтр: если есть expected_grams — берём ±500 г.
+    Распознаёт вес на фото весов через EasyOCR.
+    Использует общий пайплайн предобработки (_prepare_scale_roi).
     Возвращает (вес в граммах или None, уверенность).
     """
-    path = Path(image_path)
-    if not path.exists():
+    preprocessed = _prepare_scale_roi(image_path)
+    if preprocessed is None or preprocessed.size == 0:
         return None, 0.0
-    img = cv2.imread(str(path))
-    if img is None:
-        return None, 0.0
-
-    h, w = img.shape[:2]
-    display_block = img[int(h * 0.50) : int(h * 0.95), :]
-    display_block = _resize_for_ocr(display_block, max_side=800)
-
-    # Пробуем автоматически найти область дисплея по красным контурам
-    roi = _find_display_roi(display_block)
-    if roi is None or roi.size == 0:
-        # Эмпирический кроп: левое верхнее окошко «ВЕС кг»
-        dh, dw = display_block.shape[:2]
-        roi = display_block[0 : int(dh * 0.55), 0 : int(dw * 0.45)]
-
-    if roi is None or roi.size == 0:
-        return None, 0.0
-
-    preprocessed = preprocess_scale_for_ocr(roi)
 
     reader = _get_reader()
     results = reader.readtext(
@@ -237,41 +214,19 @@ def extract_weight_from_scale_image(
         paragraph=False,
     )
 
-    candidates: List[Tuple[float, float]] = []  # (grams, conf)
-    for (_bbox, text, conf) in results:
-        text = text.strip()
-        if not text:
-            continue
-        for m in re.finditer(r"(\d+(?:\.\d+)?)", text):
-            try:
-                val = float(m.group(1))
-            except ValueError:
-                continue
-            # Интерпретируем: если 0.001–50 → кг, если 100–50000 → граммы
-            if 0.001 <= val <= 50.0:
-                candidates.append((val * 1000, conf))  # кг → г
-            if 100 <= val <= 50_000:
-                candidates.append((val, conf))  # уже граммы
+    word_texts = [text.strip() for (_bbox, text, _conf) in results]
+    candidates_kg = _parse_scale_candidates(word_texts)
+    best_kg = _pick_best_candidate(candidates_kg, expected_grams)
 
-    if not candidates:
+    if best_kg is None:
         return None, 0.0
 
-    # Логический фильтр: если знаем ожидаемый вес, берём ±500 г
-    if expected_grams is not None and expected_grams > 0:
-        in_range = [
-            (g, c) for g, c in candidates
-            if abs(g - expected_grams) <= 500
-        ]
-        if in_range:
-            best = min(in_range, key=lambda x: abs(x[0] - expected_grams))
-            return best[0], best[1]
-        # Ничего в ±500 г — берём ближайшее
-        best = min(candidates, key=lambda x: abs(x[0] - expected_grams))
-        return best[0], best[1]
+    best_conf = 0.0
+    for (_bbox, text, conf) in results:
+        if text.strip():
+            best_conf = max(best_conf, conf)
 
-    # Без ожидаемого — берём значение с максимальной уверенностью
-    best = max(candidates, key=lambda x: x[1])
-    return best[0], best[1]
+    return best_kg * 1000, best_conf
 
 
 def detect_text_gcv(image_path: str | Path) -> str:
@@ -400,41 +355,106 @@ def extract_massa_from_label_gcv(image_path: str | Path) -> Tuple[float | None, 
     return best[0], best[1]
 
 
+def _prepare_scale_roi(image_path: str | Path) -> np.ndarray | None:
+    """
+    Общая подготовка ROI дисплея «ВЕС кг» для любого OCR-движка:
+    1) Кроп нижней половины (блок дисплеев).
+    2) Автодетект ROI по красным контурам или эмпирический кроп.
+    3) HSV-маска → бинаризация → дилатация → закрытие.
+    Возвращает чистое ч/б изображение только с цифрами или None.
+    """
+    path = Path(image_path)
+    if not path.exists():
+        return None
+    img = cv2.imread(str(path))
+    if img is None:
+        return None
+
+    h, w = img.shape[:2]
+    display_block = img[int(h * 0.45):int(h * 0.95), :]
+    display_block = _resize_for_ocr(display_block, max_side=800)
+
+    roi = _find_display_roi(display_block)
+    if roi is None or roi.size == 0:
+        dh, dw = display_block.shape[:2]
+        roi = display_block[0:int(dh * 0.55), 0:int(dw * 0.45)]
+
+    if roi is None or roi.size == 0:
+        return None
+
+    return preprocess_scale_for_ocr(roi)
+
+
+def _parse_scale_candidates(texts: List[str]) -> List[float]:
+    """
+    Из списка распознанных строк извлекает кандидатов веса в кг.
+    Интерпретация: 4-значное целое без точки (напр. «2020») → X.XXX кг,
+    число с точкой 0.001–50 → кг, число 100–50000 → граммы → кг.
+    """
+    candidates: List[float] = []
+    for text in texts:
+        text = text.strip().replace(",", ".")
+        if not text:
+            continue
+        for m in re.finditer(r"(\d+(?:\.\d+)?)", text):
+            try:
+                val = float(m.group(1))
+            except ValueError:
+                continue
+            if 0.001 <= val <= 50.0:
+                candidates.append(val)
+            # 4-значное целое без точки: «2020» → 2.020 кг
+            if val == int(val) and 1000 <= val <= 50_000:
+                candidates.append(val / 1000.0)
+            # Просто граммы → кг
+            if 100 <= val <= 50_000 and val != int(val):
+                candidates.append(val / 1000.0)
+    return candidates
+
+
+def _pick_best_candidate(
+    candidates: List[float],
+    expected_grams: float | None,
+) -> float | None:
+    """Выбирает лучшего кандидата (кг). Предпочитает ближайшего к ожидаемому."""
+    if not candidates:
+        return None
+    filtered = [c for c in candidates if 0.05 <= c <= 50.0]
+    if not filtered:
+        return None
+
+    if expected_grams is not None and expected_grams > 0:
+        expected_kg = expected_grams / 1000.0
+        in_range = [c for c in filtered if abs(c - expected_kg) <= 0.5]
+        if in_range:
+            return min(in_range, key=lambda c: abs(c - expected_kg))
+        return min(filtered, key=lambda c: abs(c - expected_kg))
+
+    with_decimal = [c for c in filtered if c != int(c)]
+    if with_decimal:
+        return max(with_decimal)
+    return max(filtered)
+
+
 def extract_weight_with_gcv(
     image_path: str | Path,
     expected_grams: float | None = None,
 ) -> Tuple[float | None, str]:
     """
     Распознаёт вес на весах через Google Cloud Vision.
-
-    Кроп области «ВЕС кг», затем из всех чисел в 0.1–50 кг выбираем одно.
-    Если передан expected_grams — берём значение, ближайшее к ожидаемому (в кг),
-    чтобы отсечь 5.0 с клавиатуры при ожидаемом ~2 кг.
-    Возвращает (вес_кг или None, полный_текст_с_кропа).
+    Отправляет предобработанное изображение (только красные цифры на чёрном фоне).
+    Возвращает (вес_кг или None, полный_текст).
     """
     if vision is None:
         return None, ""
 
-    path = Path(image_path)
-    if not path.exists():
+    preprocessed = _prepare_scale_roi(image_path)
+    if preprocessed is None or preprocessed.size == 0:
         return None, ""
 
-    img = cv2.imread(str(path))
-    if img is None:
-        return None, ""
-    h, w = img.shape[:2]
-
-    # Кроп области «ВЕС кг»: левая часть кадра, дисплеи по вертикали
-    # чуть шире/ниже, чтобы не обрезать цифры на разных ракурсах
-    row_start = int(h * 0.50)
-    row_end = int(h * 0.85)
-    col_end = int(w * 0.45)
-    weight_roi = img[row_start:row_end, 0:col_end]
-
-    if weight_roi.size == 0:
-        return None, ""
-
-    _, buf = cv2.imencode(".jpg", weight_roi)
+    # Увеличиваем контраст для GCV: маленькие цифры плохо читаются
+    scaled = cv2.resize(preprocessed, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    _, buf = cv2.imencode(".png", scaled)
     content = buf.tobytes()
 
     try:
@@ -451,38 +471,17 @@ def extract_weight_with_gcv(
     if response.full_text_annotation and response.full_text_annotation.text:
         full_text = response.full_text_annotation.text
 
-    # Собираем все числа с кропа
-    candidates: List[float] = []
+    word_texts: List[str] = []
+    if response.full_text_annotation:
+        for page in response.full_text_annotation.pages:
+            for block in page.blocks:
+                for para in block.paragraphs:
+                    for word in para.words:
+                        word_texts.append("".join(s.text for s in word.symbols))
 
-    for page in response.full_text_annotation.pages:
-        for block in page.blocks:
-            for para in block.paragraphs:
-                for word in para.words:
-                    word_text = "".join(s.text for s in word.symbols)
-                    for m in re.finditer(r"(\d+(?:[.,]\d+)?)", word_text):
-                        try:
-                            raw = m.group(1).replace(",", ".")
-                            val = float(raw)
-                            if 0.001 <= val <= 50.0:
-                                candidates.append(val)
-                            # Дисплей мог распознаться как "2020" без точки — тогда это граммы
-                            if 100 <= val <= 50_000 and expected_grams is not None:
-                                candidates.append(val / 1000.0)
-                        except ValueError:
-                            continue
+    if not word_texts and full_text:
+        word_texts = full_text.split()
 
-    candidates = [c for c in candidates if c >= 0.1 and c <= 50.0]
-    if not candidates:
-        return None, full_text
-
-    # Если знаем ожидаемый вес — берём кандидат, ближайший к нему (в кг)
-    if expected_grams is not None and expected_grams > 0:
-        expected_kg = expected_grams / 1000.0
-        best = min(candidates, key=lambda c: abs(c - expected_kg))
-        return best, full_text
-
-    # Иначе — число с десятичной точкой (формат 2.020) или максимальное
-    with_decimal = [c for c in candidates if c != int(c)]
-    if with_decimal:
-        return max(with_decimal), full_text
-    return max(candidates), full_text
+    candidates = _parse_scale_candidates(word_texts)
+    best = _pick_best_candidate(candidates, expected_grams)
+    return best, full_text
