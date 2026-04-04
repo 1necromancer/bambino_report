@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Bambino</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="header">
+      <h1>Bambino</h1>
+      <p class="header-sub">Учёт мороженого</p>
+    </header>
+
+    <!-- Tabs content -->
+    <main id="content"></main>
+
+    <!-- Bottom nav -->
+    <nav class="tab-bar">
+      <button class="tab active" data-tab="stock">
+        <span class="tab-icon">📦</span>
+        <span class="tab-label">Склад</span>
+      </button>
+      <button class="tab" data-tab="sales">
+        <span class="tab-icon">🛒</span>
+        <span class="tab-label">Продажи</span>
+      </button>
+      <button class="tab" data-tab="reports">
+        <span class="tab-icon">📊</span>
+        <span class="tab-label">Отчёт</span>
+      </button>
+      <button class="tab" data-tab="admin" id="tab-admin" style="display:none">
+        <span class="tab-icon">⚙️</span>
+        <span class="tab-label">Настройки</span>
+      </button>
+    </nav>
+  </div>
+
+  <!-- Sale modal -->
+  <div class="modal-overlay" id="sale-modal" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="sale-modal-title">Продажа</h2>
+        <button class="modal-close" onclick="closeModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="size-grid" id="sale-sizes"></div>
+        <div class="qty-row" id="sale-qty-row" style="display:none">
+          <label>Количество:</label>
+          <div class="qty-control">
+            <button class="qty-btn" onclick="changeQty(-1)">−</button>
+            <input type="number" id="sale-qty" value="1" min="1" max="99">
+            <button class="qty-btn" onclick="changeQty(1)">+</button>
+          </div>
+          <button class="btn btn-primary btn-full" id="sale-submit" onclick="submitSale()">Добавить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add product modal -->
+  <div class="modal-overlay" id="add-product-modal" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Новый сорт</h2>
+        <button class="modal-close" onclick="closeAddProduct()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Название</label>
+          <input type="text" id="new-product-name" placeholder="Манго">
+        </div>
+        <div class="form-group">
+          <label>Тара (г)</label>
+          <input type="number" id="new-product-tare" value="50">
+        </div>
+        <div class="form-group">
+          <label>Себестоимость (₸/г)</label>
+          <input type="text" id="new-product-cost" value="0.06">
+        </div>
+        <button class="btn btn-primary btn-full" onclick="submitProduct()">Создать</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>

@@ -5,9 +5,10 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    WebAppInfo,
 )
 
-from config import OWNER_IDS
+from config import OWNER_IDS, WEBAPP_URL
 
 router = Router()
 
@@ -21,6 +22,8 @@ def main_kb(user_id: int) -> InlineKeyboardMarkup:
     ]
     if user_id in OWNER_IDS:
         rows.append([InlineKeyboardButton(text="⚙ Управление сортами", callback_data="admin_products")])
+    if WEBAPP_URL:
+        rows.append([InlineKeyboardButton(text="📱 Mini App", web_app=WebAppInfo(url=WEBAPP_URL))])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

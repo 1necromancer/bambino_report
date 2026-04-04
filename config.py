@@ -16,4 +16,6 @@ for _id in os.getenv("OWNER_IDS", "").split(","):
     if _id.isdigit():
         OWNER_IDS.add(int(_id))
 
+WEBAPP_URL = os.getenv("WEBAPP_URL", "")
+
 assert TOKEN, "TOKEN must be set in .env"
