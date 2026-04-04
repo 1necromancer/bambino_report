@@ -21,13 +21,15 @@ services:
     environment:
       DB_URL: postgresql+asyncpg://${POSTGRES_USER:-bombino}:${POSTGRES_PASSWORD:-bombino_secret}@db:5432/${POSTGRES_DB:-bambino}
       GOOGLE_APPLICATION_CREDENTIALS: /app/gcp-vision-key.json
+    ports:
+      - "8080:8080"
     volumes:
       - ./gcp-vision-key.json:/app/gcp-vision-key.json:ro
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
-    mem_limit: 3g  # EasyOCR + PyTorch need enough RAM so container isn't OOM-killed
+    mem_limit: 3g
 
 volumes:
   postgres_data:
