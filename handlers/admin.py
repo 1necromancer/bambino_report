@@ -16,6 +16,12 @@ from database.models import Price, Product
 
 router = Router()
 
+DEFAULT_PRICES = [
+    (90, 700),
+    (150, 1000),
+    (210, 1500),
+]
+
 
 def _is_owner(user_id: int) -> bool:
     return user_id in OWNER_IDS
@@ -125,14 +131,21 @@ async def admin_add_cost(message: Message, session: AsyncSession, state: FSMCont
     session.add(product)
     await session.flush()
 
+    for size, price in DEFAULT_PRICES:
+        session.add(Price(product_id=product.id, size_grams=size, sale_price=Decimal(str(price))))
+    await session.flush()
+
+    prices_str = ", ".join(f"{s} г — {p} ₸" for s, p in DEFAULT_PRICES)
     await state.clear()
-    await state.update_data(admin_edit_product_id=product.id)
     await message.answer(
-        f"Сорт «{product.name}» создан.\n\n"
-        "Теперь добавьте хотя бы одну цену (порцию).\n"
-        "Введите размер порции (граммы, например 90):",
+        f"Сорт «{product.name}» создан.\n"
+        f"Цены по умолчанию: {prices_str}\n\n"
+        "Можете изменить цены в настройках сорта.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Настроить сорт", callback_data=f"admin_prod_{product.id}")],
+            *_back_admin(),
+        ]),
     )
-    await state.set_state("admin_price_size")
 
 
 # ── View / edit product ──────────────────────────────────────────────
