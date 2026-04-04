@@ -23,7 +23,6 @@ async def main() -> None:
     bot = Bot(TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 
     await bot.set_my_commands([
-        BotCommand(command="start", description="Главное меню"),
         BotCommand(command="menu", description="Главное меню"),
     ])
 
